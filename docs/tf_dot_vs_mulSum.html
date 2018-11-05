@@ -1,0 +1,108 @@
+<!--
+  This file is part of ND.JS.
+  
+  ND.JS is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  ND.JS is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with ND.JS. If not, see <http://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+<html>
+ <head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+   <title>WebGL - Cholesky Decomposition</title>
+   <script src="https://cdn.plot.ly/plotly-latest.min.js"> </script>
+   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.13.3/dist/tf.min.js"> </script>
+  </head>
+ <body>
+  <script type="text/javascript">
+    'use strict';
+    const plot = document.createElement('div');
+    plot.height = '900px';
+    document.body.appendChild(plot);
+
+    function measure_time( func )
+    {
+      const t0 = performance.now();
+      func();
+      const dt = performance.now() - t0;
+      return dt;
+    }
+
+    const sleep = dt => new Promise( f => setTimeout(f,dt) );
+
+    const sizes = [],
+          dt_dot = [],
+          dt_mulSum = [];
+
+    const data = [{
+      type: 'scattergl',
+      name: 'tf.dot(x,y)',
+      x: sizes,
+      y: dt_dot
+    },{
+      type: 'scattergl',
+      name: 'tf.mul(x,y).sum()',
+      x: sizes,
+      y: dt_mulSum
+    }];
+
+    const layout = {
+      title: '<b>`tf.dot(x,y)` vs `tf.mul(x,y).sum()`</b><br><i>Warning:</i> Benchmark quite demanding in the end.',
+      height: 900
+    };
+
+    Plotly.react(plot,{data,layout});
+
+    tf.setBackend('webgl',true);
+
+    async function main()
+    {
+      for( let size=1024; size < 1024*1024; size += 1024 )
+      {
+        let x,y;
+        try {
+          await sleep();
+          x = tf.range(0,1*size,1);
+          y = tf.range(0,2*size,2);
+          if( x.shape[0] != size ) throw new Error('Assertion failed!');
+          if( y.shape[0] != size ) throw new Error('Assertion failed!');
+          // MAKE SURE DATA IS UPLOADED TO WEBGL
+          tf.tidy( () => {
+            const [xVal] = tf.dot(x,y)      .dataSync(),
+                  [yVal] = tf.mul(x,y).sum().dataSync();
+            if( Math.abs(xVal-yVal) > 1e-4*Math.abs((xVal+yVal)/2) )
+              throw new Error('Assertion failed.');
+          });
+          sizes.push(size);
+          dt_mulSum.push( measure_time(
+            () => tf.tidy( () => tf.mul(x,y).sum().dataSync() )
+          ));
+          dt_dot.push( measure_time(
+            () => tf.tidy( () => tf.dot(x,y).dataSync() )
+          ));
+          if( size%(16*1024) == 0 ) {
+            console.log('SIZE: ' + (size>>>10) + '*1024');
+            Plotly.restyle(plot, { y: [dt_dot,dt_mulSum] });
+          }
+        }
+        finally {
+          x.dispose();
+          y.dispose();
+        }
+      }
+    }
+    main();
+  </script>
+ </body>
+</html>
