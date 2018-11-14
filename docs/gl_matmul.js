@@ -2391,7 +2391,10 @@ function main()
       for( const [name,gl_matmul] of Object.entries(method_dict) )
       {
         await sleep(16); // <- maybe sleeping a little allows the GPU to flush/cool
-        C = gl_matmul(A,B, dt => times[name].push(dt) );
+        times[name].push(
+          timeit( () => C = gl_matmul(A,B) )
+        );
+//        C = gl_matmul(A,B, dt => times[name].push(dt) );
       }
 
       // UPDATE PLOT
