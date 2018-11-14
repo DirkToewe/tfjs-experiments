@@ -1,0 +1,83 @@
+<!--
+  This file is part of ND.JS.
+  
+  ND.JS is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  ND.JS is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with ND.JS. If not, see <http://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+<html>
+ <head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+   <title>WebGL - Cholesky Decomposition</title>
+   <script src="https://cdn.plot.ly/plotly-latest.min.js"> </script>
+   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.13.3/dist/tf.min.js"> </script>
+  </head>
+ <body>
+  <script type="text/javascript">
+    'use strict';
+    const div = document.createElement('div');
+    div.height = '900px';
+    document.body.appendChild(div);
+
+    function rosenbrock( x )
+    {
+      if( x.rank < 1 ) {
+        throw new Error('rosenbrock(x): x.rank must be at least 1.');
+      }
+      if( x.shape[x.rank-1] < 2 ) {
+        throw new Error('rosenbrock(x): x.shape[-1] must be at least 2.');
+      }
+
+      const ONE = tf.scalar(1),
+            TWO = tf.scalar(2),
+            B   = tf.scalar(100);
+
+      const start = x.shape.map( () => 0 ),
+            end   = x.shape.slice();
+      --  end[x.rank-1]; const xi = x.slice(start,end);
+      ++start[x.rank-1]; const xj = x.slice(start,end);
+
+      return tf.add(
+        tf.sub( xj, xi .pow(TWO) ).pow(TWO).mul(B),
+        tf.sub(ONE, xi).pow(TWO)
+      ).sum(/*axis=*/-1);
+    }
+
+    const x = [...function*(){ for(let x=-2; x <= 2; x+=0.01) yield x; }() ],
+          y = [...function*(){ for(let y=-1; y <= 3; y+=0.01) yield y; }() ];
+
+    const xy = tf.stack([
+      tf.tensor1d(x).reshape([ 1,-1]).tile([  y.length,1]),
+      tf.tensor1d(y).reshape([-1, 1]).tile([1,x.length  ])
+    ],/*axis=*/-1);
+
+    const z = rosenbrock(xy)
+      .unstack()
+      .map( row => Array.from(row.dataSync()) );
+
+    const data = [{
+      type: 'surface',
+      x,y,z,
+      colorscale: 'Viridis'
+    }];
+
+    const layout = {
+      height: 900
+    };
+
+    Plotly.react(div,{data,layout});
+  </script>
+ </body>
+</html>

@@ -20,7 +20,7 @@
   <meta http-equiv="content-type" content="text/html; charset=UTF-8">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-   <title>WebGL - Cholesky Decomposition</title>
+   <title>tf.dot(x,y) vs tf.mul(x,y).sum()</title>
    <script src="https://cdn.plot.ly/plotly-latest.min.js"> </script>
    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.13.3/dist/tf.min.js"> </script>
   </head>
@@ -59,7 +59,9 @@
 
     const layout = {
       title: '<b>`tf.dot(x,y)` vs `tf.mul(x,y).sum()`</b><br><i>Warning:</i> Benchmark quite demanding in the end.',
-      height: 900
+      height: 900,
+      xaxis: { title: 'size' },
+      yaxis: { title: 'time [msec]' }
     };
 
     Plotly.react(plot,{data,layout});
@@ -68,7 +70,7 @@
 
     async function main()
     {
-      for( let size=1024; size < 1024*1024; size += 1024 )
+      for( let size=1024; size < 512*1024; size += 1024 )
       {
         let x,y;
         try {
