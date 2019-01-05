@@ -574,346 +574,6 @@ const gl_matmul_block1x4 = function(){
 }();
 
 
-const gl_matmul_block4x4_v1 = function(){
-
-  const vertShader = `\
-    #version 300 es
-    precision highp float;
-    precision highp int;
-
-    // INPUTS
-    in vec2 pos;
-
-    // OUTPUTS
-
-    // SHADER
-    void main() {
-      gl_Position = vec4( pos, 0.0, 1.0 );
-    }
-  `;
-
-  const program_mul = mkProgram(
-    vertShader,
-     //
-    // MATMUL SHADER
-   //
-    `#version 300 es
-      precision highp float;
-      precision highp int;
-
-      // INPUTS
-      uniform highp int innerSize;
-      uniform highp sampler2D matrix_A;
-      uniform highp sampler2D matrix_B;
-
-      // OUTPUTS
-      out highp vec4 block4x4[4];
-
-      highp mat4 read( highp sampler2D matrix, int i, int j ) {
-         return mat4(
-          texelFetch( matrix, ivec2(j,i*4+0), /*lod=*/0 ),
-          texelFetch( matrix, ivec2(j,i*4+1), /*lod=*/0 ),
-          texelFetch( matrix, ivec2(j,i*4+2), /*lod=*/0 ),
-          texelFetch( matrix, ivec2(j,i*4+3), /*lod=*/0 )
-        );
-      }
-
-      highp mat4 A( int i, int j ) { return read(matrix_A, i,j); }
-      highp mat4 B( int i, int j ) { return read(matrix_B, i,j); }
-      
-      void main()
-      {
-        highp int i = int(gl_FragCoord.y),
-                  j = int(gl_FragCoord.x);
-
-        // https://en.wikipedia.org/wiki/Kahan_summation_algorithm#The_algorithm
-        highp mat4 C_ij = mat4(0),
-                   c_ij = mat4(0);
-
-        for( int k=0; k < innerSize; k++ )
-        {
-          highp mat4 s = B(k,j)*A(i,k) - c_ij,
-                     S = C_ij + s;
-          c_ij = (S - C_ij) - s;
-          C_ij =  S;
-        }
-
-        block4x4[0] = C_ij[0];
-        block4x4[1] = C_ij[1];
-        block4x4[2] = C_ij[2];
-        block4x4[3] = C_ij[3];
-      }
-    `
-  );
-
-  const program_post = mkProgram(
-    vertShader,
-     //
-    // MATMUL SHADER
-   //
-    `#version 300 es
-      precision highp float;
-      precision highp int;
-
-      // INPUTS
-      uniform highp sampler2D C0;
-      uniform highp sampler2D C1;
-      uniform highp sampler2D C2;
-      uniform highp sampler2D C3;
-
-      // OUTPUTS
-      out highp vec4 C_ij;
-
-      highp vec4 read( highp sampler2D matrix, int i, int j ) {
-        return texelFetch( matrix, ivec2(j,i), /*lod=*/0 );
-      }
-      
-      void main()
-      {
-        highp int i = int(gl_FragCoord.y),
-                  j = int(gl_FragCoord.x),
-                  k = i%4;
-        i /= 4;
-        switch(k) {
-          case 0: C_ij = read(C0,i,j); break;
-          case 1: C_ij = read(C1,i,j); break;
-          case 2: C_ij = read(C2,i,j); break;
-          case 3: C_ij = read(C3,i,j); break;
-        }
-      }
-    `
-  );
-
-   //
-  // INIT
- //
-  const   pos_mul = gl. getAttribLocation(program_mul, 'pos'),
-    innerSize_mul = gl.getUniformLocation(program_mul, 'innerSize'),
-     matrix_A_mul = gl.getUniformLocation(program_mul, 'matrix_A'),
-     matrix_B_mul = gl.getUniformLocation(program_mul, 'matrix_B');
-
-  const   pos_post = gl. getAttribLocation(program_post, 'pos'),
-    matrix_C0_post = gl.getUniformLocation(program_post, 'C0'),
-    matrix_C1_post = gl.getUniformLocation(program_post, 'C1'),
-    matrix_C2_post = gl.getUniformLocation(program_post, 'C2'),
-    matrix_C3_post = gl.getUniformLocation(program_post, 'C3');
-
-  const posBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, Float32Array.of(
-   -1,+1,
-   +1,+1,
-   -1,-1,
-   +1,-1
-  ), gl.STATIC_DRAW);
-
-  const [matrix_A_tex,
-         matrix_B_tex,
-         matrix_C0_tex,
-         matrix_C1_tex,
-         matrix_C2_tex,
-         matrix_C3_tex,
-         matrix_C_tex] = function*(){
-    for( let i=7; i-- > 0; )
-    {
-      const tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      yield tex;
-    }
-  }();
-
-  const frameBuf = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
-
-  return (A,B, timeCallback) => {
-    if( A.ndim != 2 ) throw new Error('A is not a matrix.');
-    if( B.ndim != 2 ) throw new Error('B is not a matrix.');
-    if( A.dtype != 'float32' ) throw new Error("A.dtype must be 'float32'.");
-    if( B.dtype != 'float32' ) throw new Error("B.dtype must be 'float32'.");
-
-    const [I,K] = A.shape.slice(-2),
-          [L,J] = B.shape.slice(-2);
-    if( K != L ) throw new Error('A.shape[-1] != B.shape[-2]');
-
-    if( I%4 != 0 ) throw new Error();
-    if( K%4 != 0 ) throw new Error();
-    if( J%4 != 0 ) throw new Error();
-
-     //
-    // UPLOAD
-   //
-//    console.time('UPLOAD');
-
-    gl.bindTexture(gl.TEXTURE_2D, matrix_A_tex);
-    gl.texImage2D(
-      /*target=*/gl.TEXTURE_2D,
-      /*levelOfDetail=*/0,
-      /*internalFormat=*/gl.RGBA32F,
-      /*width,height=*/K>>>2, I,
-      /*border=*/0,
-      /*format=*/gl.RGBA,
-      /*type=*/gl.FLOAT,
-      /*srcData=*/A.data
-    );
-    gl.bindTexture(gl.TEXTURE_2D, matrix_B_tex);
-    gl.texImage2D(
-      /*target=*/gl.TEXTURE_2D,
-      /*levelOfDetail=*/0,
-      /*internalFormat=*/gl.RGBA32F,
-      /*width,height=*/J>>>2, K,
-      /*border=*/0,
-      /*format=*/gl.RGBA,
-      /*type=*/gl.FLOAT,
-      /*srcData=*/B.data
-    );
-
-    gl.finish();
-    const t0 = performance.now();
-
-    for( const matrix of [
-      matrix_C0_tex,
-      matrix_C1_tex,
-      matrix_C2_tex,
-      matrix_C3_tex
-    ] )
-    {
-      gl.bindTexture(gl.TEXTURE_2D, matrix);
-      gl.texImage2D(
-        /*target=*/gl.TEXTURE_2D,
-        /*levelOfDetail=*/0,
-        /*internalFormat=*/gl.RGBA32F,
-        /*width,height=*/J>>>2,I>>>2,
-        /*border=*/0,
-        /*format=*/gl.RGBA,
-        /*type=*/gl.FLOAT,
-        /*srcData=*/null
-      );
-    }
-    gl.bindTexture(gl.TEXTURE_2D, matrix_C_tex);
-    gl.texImage2D(
-      /*target=*/gl.TEXTURE_2D,
-      /*levelOfDetail=*/0,
-      /*internalFormat=*/gl.RGBA32F,
-      /*width,height=*/J>>>2,I,
-      /*border=*/0,
-      /*format=*/gl.RGBA,
-      /*type=*/gl.FLOAT,
-      /*srcData=*/null
-    );
-
-//    gl.finish();
-//    console.timeEnd('UPLOAD');
-
-     //
-    // COMPUTE
-   //
-//    console.time('COMPUTATION');
-
-
-    gl.useProgram(program_mul);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
-
-    gl.viewport(0,0,J>>>2,I>>>2);
-    gl.drawBuffers([
-      gl.COLOR_ATTACHMENT0,
-      gl.COLOR_ATTACHMENT1,
-      gl.COLOR_ATTACHMENT2,
-      gl.COLOR_ATTACHMENT3
-    ]);
-    gl.uniform1i(innerSize_mul, K>>>2);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-    gl.enableVertexAttribArray(pos_mul);
-    gl.vertexAttribPointer(pos_mul, 2, gl.FLOAT, false, 0, 0);
-
-    // SET WRITE TO MATRIX C
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, matrix_C0_tex, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, matrix_C1_tex, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, matrix_C2_tex, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, matrix_C3_tex, /*lod=*/0);
-
-    // READ FROM MATRICES A,B
-    gl.uniform1i(matrix_A_mul, 0); // texture unit 0
-    gl.uniform1i(matrix_B_mul, 1); // texture unit 1
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, matrix_A_tex);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, matrix_B_tex);
-
-    // COMPUTE
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0,4);
-
-//    gl.finish();
-//    console.timeEnd('COMPUTATION');
-
-     //
-    // POSTPROCESS
-   //
-//    console.time('POSTPROCESS');
-
-    gl.useProgram(program_post);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
-
-    gl.viewport(0,0,J>>>2,I);
-    gl.drawBuffers([
-      gl.COLOR_ATTACHMENT0
-    ]);
-
-    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-    gl.enableVertexAttribArray(pos_post);
-    gl.vertexAttribPointer(pos_post, 2, gl.FLOAT, false, 0, 0);
-
-    // SET WRITE TO MATRIX C
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, matrix_C_tex, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, null, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, null, /*lod=*/0);
-    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, null, /*lod=*/0);
-
-    // READ FROM MATRICES C0,C1,C2,C3
-    gl.uniform1i(matrix_C0_post, 0);
-    gl.uniform1i(matrix_C1_post, 1);
-    gl.uniform1i(matrix_C2_post, 2);
-    gl.uniform1i(matrix_C3_post, 3);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, matrix_C0_tex);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, matrix_C1_tex);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, matrix_C2_tex);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, matrix_C3_tex);
-
-    // COMPUTE
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0,4);
-
-    if( null != timeCallback ) {
-      gl.finish();
-      const dt = performance.now() - t0;
-      timeCallback(dt);
-//    console.timeEnd('POSTPROCESS');
-    }
-
-
-     //
-    // DOWNLOAD
-   //
-    let outArr = new Float32Array(I*J);
-//    console.time('DOWNLOAD')
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(
-      /*x,y=*/0,0,
-      /*w,h=*/J>>>2,I,
-      /*format=*/gl.RGBA,
-      /*type=*/gl.FLOAT,
-      /*writeTo=*/outArr
-    );
-//    console.timeEnd('DOWNLOAD')
-
-    return new nd.Array(Int32Array.of(I,J), outArr)
-  };
-}();
-
-
 const gl_matmul_block2x2_v1 = function(){
 
   const vertShader = `\
@@ -1543,6 +1203,346 @@ const gl_matmul_block2x2_v2 = function(){
 }();
 
 
+const gl_matmul_block4x4_v1 = function(){
+
+  const vertShader = `\
+    #version 300 es
+    precision highp float;
+    precision highp int;
+
+    // INPUTS
+    in vec2 pos;
+
+    // OUTPUTS
+
+    // SHADER
+    void main() {
+      gl_Position = vec4( pos, 0.0, 1.0 );
+    }
+  `;
+
+  const program_mul = mkProgram(
+    vertShader,
+     //
+    // MATMUL SHADER
+   //
+    `#version 300 es
+      precision highp float;
+      precision highp int;
+
+      // INPUTS
+      uniform highp int innerSize;
+      uniform highp sampler2D matrix_A;
+      uniform highp sampler2D matrix_B;
+
+      // OUTPUTS
+      out highp vec4 block4x4[4];
+
+      highp mat4 read( highp sampler2D matrix, int i, int j ) {
+         return mat4(
+          texelFetch( matrix, ivec2(j,i*4+0), /*lod=*/0 ),
+          texelFetch( matrix, ivec2(j,i*4+1), /*lod=*/0 ),
+          texelFetch( matrix, ivec2(j,i*4+2), /*lod=*/0 ),
+          texelFetch( matrix, ivec2(j,i*4+3), /*lod=*/0 )
+        );
+      }
+
+      highp mat4 A( int i, int j ) { return read(matrix_A, i,j); }
+      highp mat4 B( int i, int j ) { return read(matrix_B, i,j); }
+      
+      void main()
+      {
+        highp int i = int(gl_FragCoord.y),
+                  j = int(gl_FragCoord.x);
+
+        // https://en.wikipedia.org/wiki/Kahan_summation_algorithm#The_algorithm
+        highp mat4 C_ij = mat4(0),
+                   c_ij = mat4(0);
+
+        for( int k=0; k < innerSize; k++ )
+        {
+          highp mat4 s = B(k,j)*A(i,k) - c_ij,
+                     S = C_ij + s;
+          c_ij = (S - C_ij) - s;
+          C_ij =  S;
+        }
+
+        block4x4[0] = C_ij[0];
+        block4x4[1] = C_ij[1];
+        block4x4[2] = C_ij[2];
+        block4x4[3] = C_ij[3];
+      }
+    `
+  );
+
+  const program_post = mkProgram(
+    vertShader,
+     //
+    // MATMUL SHADER
+   //
+    `#version 300 es
+      precision highp float;
+      precision highp int;
+
+      // INPUTS
+      uniform highp sampler2D C0;
+      uniform highp sampler2D C1;
+      uniform highp sampler2D C2;
+      uniform highp sampler2D C3;
+
+      // OUTPUTS
+      out highp vec4 C_ij;
+
+      highp vec4 read( highp sampler2D matrix, int i, int j ) {
+        return texelFetch( matrix, ivec2(j,i), /*lod=*/0 );
+      }
+      
+      void main()
+      {
+        highp int i = int(gl_FragCoord.y),
+                  j = int(gl_FragCoord.x),
+                  k = i%4;
+        i /= 4;
+        switch(k) {
+          case 0: C_ij = read(C0,i,j); break;
+          case 1: C_ij = read(C1,i,j); break;
+          case 2: C_ij = read(C2,i,j); break;
+          case 3: C_ij = read(C3,i,j); break;
+        }
+      }
+    `
+  );
+
+   //
+  // INIT
+ //
+  const   pos_mul = gl. getAttribLocation(program_mul, 'pos'),
+    innerSize_mul = gl.getUniformLocation(program_mul, 'innerSize'),
+     matrix_A_mul = gl.getUniformLocation(program_mul, 'matrix_A'),
+     matrix_B_mul = gl.getUniformLocation(program_mul, 'matrix_B');
+
+  const   pos_post = gl. getAttribLocation(program_post, 'pos'),
+    matrix_C0_post = gl.getUniformLocation(program_post, 'C0'),
+    matrix_C1_post = gl.getUniformLocation(program_post, 'C1'),
+    matrix_C2_post = gl.getUniformLocation(program_post, 'C2'),
+    matrix_C3_post = gl.getUniformLocation(program_post, 'C3');
+
+  const posBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, Float32Array.of(
+   -1,+1,
+   +1,+1,
+   -1,-1,
+   +1,-1
+  ), gl.STATIC_DRAW);
+
+  const [matrix_A_tex,
+         matrix_B_tex,
+         matrix_C0_tex,
+         matrix_C1_tex,
+         matrix_C2_tex,
+         matrix_C3_tex,
+         matrix_C_tex] = function*(){
+    for( let i=7; i-- > 0; )
+    {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      yield tex;
+    }
+  }();
+
+  const frameBuf = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
+
+  return (A,B, timeCallback) => {
+    if( A.ndim != 2 ) throw new Error('A is not a matrix.');
+    if( B.ndim != 2 ) throw new Error('B is not a matrix.');
+    if( A.dtype != 'float32' ) throw new Error("A.dtype must be 'float32'.");
+    if( B.dtype != 'float32' ) throw new Error("B.dtype must be 'float32'.");
+
+    const [I,K] = A.shape.slice(-2),
+          [L,J] = B.shape.slice(-2);
+    if( K != L ) throw new Error('A.shape[-1] != B.shape[-2]');
+
+    if( I%4 != 0 ) throw new Error();
+    if( K%4 != 0 ) throw new Error();
+    if( J%4 != 0 ) throw new Error();
+
+     //
+    // UPLOAD
+   //
+//    console.time('UPLOAD');
+
+    gl.bindTexture(gl.TEXTURE_2D, matrix_A_tex);
+    gl.texImage2D(
+      /*target=*/gl.TEXTURE_2D,
+      /*levelOfDetail=*/0,
+      /*internalFormat=*/gl.RGBA32F,
+      /*width,height=*/K>>>2, I,
+      /*border=*/0,
+      /*format=*/gl.RGBA,
+      /*type=*/gl.FLOAT,
+      /*srcData=*/A.data
+    );
+    gl.bindTexture(gl.TEXTURE_2D, matrix_B_tex);
+    gl.texImage2D(
+      /*target=*/gl.TEXTURE_2D,
+      /*levelOfDetail=*/0,
+      /*internalFormat=*/gl.RGBA32F,
+      /*width,height=*/J>>>2, K,
+      /*border=*/0,
+      /*format=*/gl.RGBA,
+      /*type=*/gl.FLOAT,
+      /*srcData=*/B.data
+    );
+
+    gl.finish();
+    const t0 = performance.now();
+
+    for( const matrix of [
+      matrix_C0_tex,
+      matrix_C1_tex,
+      matrix_C2_tex,
+      matrix_C3_tex
+    ] )
+    {
+      gl.bindTexture(gl.TEXTURE_2D, matrix);
+      gl.texImage2D(
+        /*target=*/gl.TEXTURE_2D,
+        /*levelOfDetail=*/0,
+        /*internalFormat=*/gl.RGBA32F,
+        /*width,height=*/J>>>2,I>>>2,
+        /*border=*/0,
+        /*format=*/gl.RGBA,
+        /*type=*/gl.FLOAT,
+        /*srcData=*/null
+      );
+    }
+    gl.bindTexture(gl.TEXTURE_2D, matrix_C_tex);
+    gl.texImage2D(
+      /*target=*/gl.TEXTURE_2D,
+      /*levelOfDetail=*/0,
+      /*internalFormat=*/gl.RGBA32F,
+      /*width,height=*/J>>>2,I,
+      /*border=*/0,
+      /*format=*/gl.RGBA,
+      /*type=*/gl.FLOAT,
+      /*srcData=*/null
+    );
+
+//    gl.finish();
+//    console.timeEnd('UPLOAD');
+
+     //
+    // COMPUTE
+   //
+//    console.time('COMPUTATION');
+
+
+    gl.useProgram(program_mul);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
+
+    gl.viewport(0,0,J>>>2,I>>>2);
+    gl.drawBuffers([
+      gl.COLOR_ATTACHMENT0,
+      gl.COLOR_ATTACHMENT1,
+      gl.COLOR_ATTACHMENT2,
+      gl.COLOR_ATTACHMENT3
+    ]);
+    gl.uniform1i(innerSize_mul, K>>>2);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.enableVertexAttribArray(pos_mul);
+    gl.vertexAttribPointer(pos_mul, 2, gl.FLOAT, false, 0, 0);
+
+    // SET WRITE TO MATRIX C
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, matrix_C0_tex, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, matrix_C1_tex, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, matrix_C2_tex, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, matrix_C3_tex, /*lod=*/0);
+
+    // READ FROM MATRICES A,B
+    gl.uniform1i(matrix_A_mul, 0); // texture unit 0
+    gl.uniform1i(matrix_B_mul, 1); // texture unit 1
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, matrix_A_tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, matrix_B_tex);
+
+    // COMPUTE
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0,4);
+
+//    gl.finish();
+//    console.timeEnd('COMPUTATION');
+
+     //
+    // POSTPROCESS
+   //
+//    console.time('POSTPROCESS');
+
+    gl.useProgram(program_post);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuf);
+
+    gl.viewport(0,0,J>>>2,I);
+    gl.drawBuffers([
+      gl.COLOR_ATTACHMENT0
+    ]);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.enableVertexAttribArray(pos_post);
+    gl.vertexAttribPointer(pos_post, 2, gl.FLOAT, false, 0, 0);
+
+    // SET WRITE TO MATRIX C
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, matrix_C_tex, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, null, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, null, /*lod=*/0);
+    gl.framebufferTexture2D(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, null, /*lod=*/0);
+
+    // READ FROM MATRICES C0,C1,C2,C3
+    gl.uniform1i(matrix_C0_post, 0);
+    gl.uniform1i(matrix_C1_post, 1);
+    gl.uniform1i(matrix_C2_post, 2);
+    gl.uniform1i(matrix_C3_post, 3);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, matrix_C0_tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, matrix_C1_tex);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, matrix_C2_tex);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, matrix_C3_tex);
+
+    // COMPUTE
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0,4);
+
+    if( null != timeCallback ) {
+      gl.finish();
+      const dt = performance.now() - t0;
+      timeCallback(dt);
+//    console.timeEnd('POSTPROCESS');
+    }
+
+
+     //
+    // DOWNLOAD
+   //
+    let outArr = new Float32Array(I*J);
+//    console.time('DOWNLOAD')
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(
+      /*x,y=*/0,0,
+      /*w,h=*/J>>>2,I,
+      /*format=*/gl.RGBA,
+      /*type=*/gl.FLOAT,
+      /*writeTo=*/outArr
+    );
+//    console.timeEnd('DOWNLOAD')
+
+    return new nd.Array(Int32Array.of(I,J), outArr)
+  };
+}();
+
+
 const gl_matmul_block4x4_v2 = function(){
 
   const vertShader = `\
@@ -1640,12 +1640,7 @@ const gl_matmul_block4x4_v2 = function(){
                   j = int(gl_FragCoord.x),
                   k = i%4;
         i /= 4;
-        switch(k) {
-          case 0: C_ij = read(C[0], i,j); break;
-          case 1: C_ij = read(C[1], i,j); break;
-          case 2: C_ij = read(C[2], i,j); break;
-          case 3: C_ij = read(C[3], i,j); break;
-        }
+        C_ij = read(C[k], i,j);
       }
     `
   );
@@ -1880,7 +1875,7 @@ const gl_matmul_block4x4_v2 = function(){
 }();
 
 
-const gl_matmul_block4x16 = function(){
+const gl_matmul_block4x8 = function(){
 
   const vertShader = `\
     #version 300 es
@@ -1999,16 +1994,7 @@ const gl_matmul_block4x16 = function(){
                   k = i%4 + j%2*4;
         i /= 4;
         j /= 2;
-        switch(k) {
-          case 0: C_ij = read(C[0], i,j); break;
-          case 1: C_ij = read(C[1], i,j); break;
-          case 2: C_ij = read(C[2], i,j); break;
-          case 3: C_ij = read(C[3], i,j); break;
-          case 4: C_ij = read(C[4], i,j); break;
-          case 5: C_ij = read(C[5], i,j); break;
-          case 6: C_ij = read(C[6], i,j); break;
-          case 7: C_ij = read(C[7], i,j); break;
-        }
+        C_ij = read(C[k], i,j);
       }
     `
   );
@@ -2297,16 +2283,16 @@ function main()
 
   async function test( method_dict )
   {
-    for( let run=0; ++run <= 8; )
+    for( let run=0; run++ < 128; )
     {
       console.log(`Run${run.toString().padStart(4)}`);
 
-      const N = 128;
+      const N = 1024;
       const I = 4*( Math.floor(Math.random()*N) + 1 );
       const K = 4*( Math.floor(Math.random()*N) + 1 );
       const J = 8*( Math.floor(Math.random()*N) + 1 );
 
-//      console.log('  I,K,J:', [I,K,J]);
+      console.log('  I,K,J:', [I,K,J]);
 
       const a = nd.tabulate([I,K], 'float32', (i,j) => Math.random()*8-4 ),
             b = nd.tabulate([K,J], 'float32', (i,j) => Math.random()*8-4 ),
@@ -2335,19 +2321,29 @@ function main()
   }
 /*
   test({
- //   gl_matmul,
+    gl_matmul,
     gl_matmul_block1x4,
     gl_matmul_block2x2_v1,
     gl_matmul_block2x2_v2,
     gl_matmul_block4x4_v1,
     gl_matmul_block4x4_v2,
-    gl_matmul_block4x16
+    gl_matmul_block4x8
   });
 */
   async function benchmark( method_dict )
   {
     const plot = document.createElement('div');
+    plot.style = 'width: 90vw; height: 90vh;';
     document.body.appendChild(plot);
+
+    const saveButton = document.createElement('button');
+    saveButton.innerHTML = 'Save Results';
+    document.body.appendChild(saveButton);
+
+    const gpuName = function(){
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : '';
+    }();
 
     const sizes = [],
           times = {};
@@ -2355,8 +2351,8 @@ function main()
     for( const name of Object.keys(method_dict) )
       times[name] = [];
 
-    // CREATE PLOT
-    {
+    const mkPlot = () => {
+
       const data = [];
 
       for( const [name,time] of Object.entries(times) )
@@ -2369,16 +2365,65 @@ function main()
         });
 
       const layout = {
-        title: '<b>WebGL Matrix Multiplication Benchmark</b><br><i>Warning:</i> Benchmark quite demanding in the end.',
-        height: 900,
-        xaxis: { title: 'size' },
-        yaxis: { title: 'time [msec]' }
+        title: '<b>WebGL Matrix Multiplication Benchmark</b><br>'+gpuName,
+        xaxis: { showgrid: true, gridcolor: '#444', color: '#999', title: 'size' },
+        yaxis: { showgrid: true, gridcolor: '#444', color: '#999', title: 'time [msec]' },
+        paper_bgcolor: 'black',
+         plot_bgcolor: 'black',
+        font: {
+          color: '#CCC'
+        }
       };
 
-      Plotly.plot(plot,{data,layout});
-    }
+      return {data,layout};
+    };
 
-    for( let N=8; N <= 2*1024; N += 8 )
+    saveButton.onclick = () => {
+      const html = `
+        <!--
+          This file is part of ND.JS.
+          
+          ND.JS is free software: you can redistribute it and/or modify
+          it under the terms of the GNU General Public License as published by
+          the Free Software Foundation, either version 3 of the License, or
+          (at your option) any later version.
+          
+          ND.JS is distributed in the hope that it will be useful,
+          but WITHOUT ANY WARRANTY; without even the implied warranty of
+          MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+          GNU General Public License for more details.
+          
+          You should have received a copy of the GNU General Public License
+          along with ND.JS. If not, see <http://www.gnu.org/licenses/>.
+        -->
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+          <title>WebGL - Matrix Multiplication Benchmark Result</title>
+          <script type="text/javascript" src="./nd.js"></script>
+          <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+        </head>
+        <body style="background-color:black;">
+          <script type="text/javascript">
+            'use strict';
+            const plot = document.createElement('div');
+            plot.style = 'width: 90vw; height: 90vh;';
+            document.body.appendChild(plot);
+            Plotly.plot(plot, ${ JSON.stringify( mkPlot(), null, '  ' ) });
+          </script>
+        </body>
+        </html>
+      `;
+      const blob = new Blob([html], { type: 'text/html' });
+      window.open( URL.createObjectURL(blob) );
+    };
+
+    Plotly.plot(plot, mkPlot());
+
+    for( let N=8; N <= 4*1024; N += 8 )
     {
       const [I,K,J] = [N,N,N];
 
@@ -2390,11 +2435,11 @@ function main()
 
       for( const [name,gl_matmul] of Object.entries(method_dict) )
       {
-        await sleep(16); // <- maybe sleeping a little allows the GPU to flush/cool
-        times[name].push(
-          timeit( () => C = gl_matmul(A,B) )
-        );
-//        C = gl_matmul(A,B, dt => times[name].push(dt) );
+        await sleep(); // <- maybe sleeping a little allows the GPU to flush/cool
+//        times[name].push(
+//          timeit( () => C = gl_matmul(A,B) )
+//        );
+        C = gl_matmul(A,B, dt => times[name].push(dt) );
       }
 
       // UPDATE PLOT
@@ -2411,7 +2456,7 @@ function main()
     gl_matmul_block2x2_v2,
     gl_matmul_block4x4_v1,
     gl_matmul_block4x4_v2,
-    gl_matmul_block4x16
+    gl_matmul_block4x8
   });
 }
 
