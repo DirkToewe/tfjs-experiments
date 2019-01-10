@@ -29,6 +29,11 @@
 {
   const turtleRace = {
 
+    /** Returns a generator of arrays. The j-th entry of
+     *  t-th array of this generator represents the race
+     *  progess made on lane `j-1` between time step `t-1`
+     *  and `t`.
+     */
     *deltas( m, n )
     {
       if( m <= 0 ) throw new Error('m cannot be negative.');
@@ -57,6 +62,10 @@
       }
     },
 
+    /** For a given track length `m` this method returns an
+     *  arr `dur` whose entry dur[`n`-1] is the duration of a
+     *  turtle race with track length `m` and `n` lanes.
+     */
     durations( m )
     {
       if( m <= 0 ) throw new Error('m cannot be negative.');
@@ -83,9 +92,12 @@
       return dur;
     },
 
+    /** Returns the duration of a race with track length `m`
+     *  and `n` lanes.
+     */
     duration( m, n ) {
-      if( m <= 0 ) throw new Error('m cannot be negative.');
-      if( n <= 0 ) throw new Error('n cannot be negative.');
+      if( m <= 0 ) throw new Error('m cannot be negative or zero.');
+      if( n <= 0 ) throw new Error('n cannot be negative or zero.');
 
       const result = new Int32Array(n+1);
       result[0] = m;
@@ -207,7 +219,7 @@
   const replot_upperLim = () => {
     try {
       upperLim = new Function('m', 'n', in_upperLim.value);
-      console.log(upperLim);
+//      console.log(upperLim);
       replot_mn();
     } catch(err) {
       console.error(err);
@@ -285,6 +297,11 @@ return Math.min(
   replot_upperLim();
 
 /*
+  const durations = Array.from( {length: 16}, (_,mn) => turtleRace.duration(mn+1,mn+1) )
+  console.log('DURATIONS:', durations)
+*/
+
+
   async function loop()
   {
     const sleep = dt => new Promise( f => setTimeout(f,dt) );
@@ -300,22 +317,22 @@ return Math.min(
         ++n;
         await sleep();
   
-        const ratio = limit(m,n) - T;
+        const ratio = upperLim(m,n) - T;
         if( worst < ratio ) {
             worst = ratio;
             console.log(`New worst ${ratio} for duration ${T} at m,n=${[m,n]}.`)
         }
   //      console.log( `M,N = ${m},${n} : ${T} (${T / Math.ceil( Math.log2(m) )})` );
   //      console.log( `M,N = ${m},${n} : ${T} (${T / limit(m,n)})` );
-        if( T > limit(m,n) )
-          throw new Error(`Assertion failed for m,n=${[m,n]}: ${T} > ${limit(m,n)}.`);
-        if( T < 0.25*limit(m,n) )
+        if( T > upperLim(m,n) )
+          throw new Error(`Assertion failed for m,n=${[m,n]}: ${T} > ${upperLim(m,n)}.`);
+        if( T < 0.25*upperLim(m,n) )
           throw new Error('Bad estimation.');
       }
     }
   }
   loop();
-*/
+
 }
    </script>
  </body>

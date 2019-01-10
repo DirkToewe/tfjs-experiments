@@ -1,0 +1,222 @@
+<!--
+  This file is - with execption if cholesky_v2() - part of ND.JS.
+  
+  ND.JS is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  ND.JS is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with ND.JS. If not, see <http://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+<html>
+ <head>
+  <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+   <title>WebGL - Cholesky Decomposition</title>
+   <script src="https://cdn.plot.ly/plotly-latest.min.js"> </script>
+   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@0.13.3/dist/tf.min.js"> </script>
+  </head>
+ <body>
+  <script type="text/javascript">
+    'use strict';
+
+    function assertClose( actual, expected, rtol=1e-2, atol=1e-3 )
+    {
+      if( expected.shape.some( (s,i) => s !== actual.shape[i] ) )
+        throw new Error(`Shapes [${actual.shape}] and [${expected.shape}] do not match.`);
+
+      const act =   actual.dataSync(),
+            exp = expected.dataSync();
+
+      const isClose = (x,y) => {
+        x = Math.abs(x);
+        y = Math.abs(y);
+        return Math.abs(x-y) <= atol + rtol/2*(x+y);
+      };
+
+      for( let i=act.length; i-- > 0; ) {
+        if( ! isClose(act[i],exp[i]) )
+        {
+          console.log(  'actual:');   actual.print();
+          console.log('expected:'); expected.print();
+          const idx = [],
+              shape = actual.shape;
+          for( let j=i, d=shape.length; d-- > 0; )
+          {
+            const size = shape[d];
+            idx.unshift(j % size);
+            j = Math.trunc(j / size);
+          }
+          throw new Error(
+            `actual[${idx}] = ${act[i]} != ${exp[i]} = expected[${idx}]`
+          );
+        }
+      }
+    }
+
+    function cholesky_v1( a )
+    {
+      if( ! a.dtype.startsWith('float') ) throw new Error(`cholesky(): a.dtype=${a.dtype} not supported.`);
+      if( a.rank < 2 ) throw new Error(`cholesky(): a.rank={a.rank} < 2.`);
+        
+      const
+        dtype = a.dtype,
+        shape = a.shape,
+        [N,M] =   shape.slice(-2),
+        L = a.dataSync().slice();
+      a = undefined;
+
+      if( N != M ) throw new Error('cholesky(): Last two dimensions must be square.')
+
+      for( let off=0; off < L.length; off += N*N )
+        // https://de.wikipedia.org/wiki/Cholesky-Zerlegung
+        for( let i=0; i<N; i++ )
+        for( let j=0; j<N; j++ )
+          if( i < j ) {
+            L[off+N*i+j] = 0;
+          } else {
+            let sum = L[off + N*i+j];
+
+            for( let k=0; k<j; k++ )
+              sum -= L[off + N*i+k] * L[off + N*j+k];
+
+            if( i > j ) L[off + N*i+j] = sum / L[off + N*j+j];
+            else {      L[off + N*i+i] = Math.sqrt(sum);
+              if( isNaN(L[off + N*i+i]) )
+                throw new Error('cholesky(): a contains NaNs or (near) negative semi-definite.');
+            }
+          }
+
+      return tf.Tensor.make(shape,{values: L},dtype);
+    }
+
+
+    /** DISCLAIMER The entire cholesky_v2 originates from https://github.com/tensorflow/tfjs-core/pull/1492
+     *  It is included for benchmarking purposes only and is exempted from the above mentioned license.
+     */
+    const cholesky_v2 = function(){
+      function level2partition( A, j ) {
+        // +-----+
+        // | r d |
+        // | B c |
+        // +-----+
+        const n = A.shape[0];
+        const rr = A.slice([j, 0], [1, j]).as1D();
+        const dd = A.slice([j, j], [1, 1]).asScalar();
+        const B = A.slice([j + 1, 0], [n - (j + 1), j]);
+        const cc = A.slice([j + 1, j], [n - (j + 1), 1]).as1D();
+        return [rr, dd, B, cc];
+      }
+  
+      return A => {
+        let n = A.shape[0]
+  
+        const Adata = A.dataSync()
+        const res = tf.zerosLike(A);
+        const resData = res.buffer();
+        for (let i = 0; i < n; i++) {
+          for (let j = 0; j < n; j++) {
+            resData.values[i * n + j] = Adata[i * n + j];
+          }
+        }
+  
+  
+        for (let j = 0; j < n; j++) {
+          let [rr, dd, B, cc] = level2partition(res, j);
+          const ddnew = dd.sub(rr.dot(rr)).sqrt();
+          const ccnew = cc.sub(B.dot(rr)).div(ddnew);
+  
+          const ddnewVals = ddnew.dataSync();
+          const ccnewVals = ccnew.dataSync();
+          // update ddnew
+          resData.values[j * n + j] = ddnewVals[0];
+          // update ccnew
+          for (let k = (j + 1); k < n; k++) {
+            resData.values[k * n + j] = ccnewVals[k - (j + 1)];
+          }
+        }
+  
+        for (let i = 0; i < n; i++)
+          for (let j = i + 1; j < n; j++)
+            resData.values[i * n + j] = 0;
+        return resData.toTensor();
+      }
+    }()
+
+
+    const plot = document.createElement('div');
+    plot.height = '900px';
+    document.body.appendChild(plot);
+
+    (async function()
+    {
+      tf.setBackend('cpu')
+      const sleep = () => new Promise( done => setTimeout(done) )
+
+      let  sizes = [],
+        times_v1 = [],
+        times_v2 = []
+
+      for( let N=3; N < 1024; N++ )
+      {
+        sizes.push(N)
+        await sleep()
+        console.log(N)
+        const j = tf.range(0,N),
+              i = j.reshape([-1,1]),
+              L = tf.add(
+                tf.randomUniform([N,N],-0.25,+0.25).mul( tf.less(j,i).cast('float32') ),
+                tf.mul(
+                  tf.randomUniform([N,N],0,2,'int32').cast('float32').mul(2).sub(1),
+                  tf.randomNormal([N,N], 1, 0.1)
+                ).mul( tf.equal(i,j).cast('float32') )
+              ),
+              LLT = tf.matMul(L,L,false,true)
+
+        {
+          const t0 = performance.now(),
+              L_v1 = cholesky_v1(LLT)
+          times_v1.push( performance.now() - t0 )
+          assertClose(L,L_v1)
+        }
+
+        {
+          const t0 = performance.now(),
+              L_v2 = cholesky_v2(LLT)
+          times_v2.push( performance.now() - t0 )
+          assertClose(L,L_v2)
+        }
+
+        const data = [{
+          type: 'scattergl',
+          name: 'PR#1356',
+          x: sizes,
+          y: times_v1.map( t => t/1000 )
+        },{
+          type: 'scattergl',
+          name: 'PR#1492',
+          x: sizes,
+          y: times_v2.map( t => t/1000 )
+        }];
+
+        const layout = {
+          height: 900,
+          title: 'TFJS Cholesky Performance Comparison',
+          xaxis: { title: 'Matrix Size' },
+          yaxis: { title: 'Time [sec.]' }
+        };
+
+        Plotly.react(plot,{data,layout});
+      }
+    })().catch( err => console.error(err) )
+  </script>
+ </body>
+</html>
