@@ -1,0 +1,206 @@
+<!--
+  This file is part of ND.JS.
+  
+  ND.JS is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+  
+  ND.JS is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+  
+  You should have received a copy of the GNU General Public License
+  along with ND.JS. If not, see <http://www.gnu.org/licenses/>.
+-->
+<!DOCTYPE html>
+<html>
+ <head>
+   <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+   <meta charset="utf-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+   <title>TFJS matrixBandPart Benchmark</title>
+
+   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.0.0/dist/tf.min.js"></script>
+ </head>
+ <body>
+   <script type="text/javascript">
+'use strict';
+(async () => {
+  const bandPart_withBackend = ( a, numLower, numUpper ) =>
+  {
+    if( numLower%1 !== 0 ) throw new Error(`bandPart(): numLower=${numLower} is no integer.`);
+    if( numUpper%1 !== 0 ) throw new Error(`bandPart(): numUpper=${numUpper} is no integer.`);
+    if( a.rank < 2 ) throw new Error(`bandPart(): a.rank = ${a.rank} < 2.`)
+
+    if( numLower < 0 ) numLower = a.shape[a.rank-2];
+    if( numUpper < 0 ) numUpper = a.shape[a.rank-1];
+
+    const B_shape = Array.from(a.shape),
+         [M,N]    = a.shape.slice(-2),
+          dtype   = a.dtype,
+          wordsPerElem = dtype.startsWith('complex') ? 2 : 1,
+          B = a.dataSync().slice(); a = undefined;
+
+    Object.freeze(B_shape);
+
+    for( let off=0; off < B.length; off += M*N )
+    for( let i=0; i < M; i++ )
+    for( let j=0; j < N; j++ )
+    if( j-i > numUpper ||
+        i-j > numLower )
+      for( let k=0; k < wordsPerElem; k++ )
+        B[wordsPerElem*(off + N*i+j) + k] = 0;
+
+    return tf.Tensor.make(B_shape,{values: B},dtype);
+  };
+
+  const bandPart_PR1520 = ( a, numLower, numUpper ) =>
+  {
+    if( numLower%1 !== 0 ){
+      throw new Error(`bandPart(): numLower=${numLower} not an integer.`);
+    }
+    if( numUpper%1 !== 0 ){
+      throw new Error(`bandPart(): numUpper=${numUpper} not an integer.`);
+    }
+
+    return tf.tidy( () => {
+      const $a = a;//convertToTensor(a,'a','bandPart');
+      a = undefined;
+
+      if( $a.rank < 2 ) {
+        throw new Error(`bandPart(): a.rank = ${$a.rank} < 2.`);
+      }
+
+      const shape = $a.shape,
+            [M,N] = $a.shape.slice(-2);
+
+      if( !(numLower <= M) ) {
+        throw new Error(`bandPart() check failed: numLower <= #rows.`   );
+      }
+      if( !(numUpper <= N) ) {
+        throw new Error(`bandPart() check failed: numUpper <= #columns.`);
+      }
+
+      if( numLower < 0 ) { numLower = M; }
+      if( numUpper < 0 ) { numUpper = N; }
+
+      const i = tf.range(0,M, 1, 'int32').reshape([-1,1]),
+            j = tf.range(0,N, 1, 'int32');
+
+      const inBand = tf.logicalAnd(
+        tf.sub(i,j).lessEqual( tf.scalar(numLower,'int32') ),
+        tf.sub(j,i).lessEqual( tf.scalar(numUpper,'int32') )
+      );
+
+      const zero = tf.zeros([M,N], $a.dtype);
+
+      return tf.stack(
+        tf.unstack( $a.reshape([-1,M,N]) ).map(
+          mat => tf.where(inBand, mat, zero)
+        )
+      ).reshape(shape);
+    });
+  };
+
+  const bandPart_PR2155 = (x, numLower, numUpper) => {
+    return tf.tidy(() => {
+      const totalElements = x.shape.reduce((a, b) => a * b);
+      if (totalElements === 0) {
+        return tensor([], x.shape);
+      }
+      const flattened = x.flatten();
+      let band = tf.tensor1d([]);
+      const rows = (x.rank < 2) ? 1 : x.shape[x.rank - 2],
+            cols =  x.shape[x.rank - 1];
+
+      for (let i = 0; i < totalElements; i += (rows * cols)) {
+        for (let j = 0; j < rows; ++j) {
+          for (let k = 0; k < cols; ++k) {
+            if ((numLower > -1 && k < j - numLower) ||
+                (numUpper > -1 && k > j + numUpper)) {
+              band = band.concat(tf.tensor([0]));
+            } else {
+              band = band.concat(flattened.slice(i + j * rows + k, 1));
+            }
+          }
+        }
+      }
+      return band.reshape(x.shape);
+    });
+  };
+
+  const   x = [],
+    methods = Object.entries({
+      bandPart_withBackend,
+      bandPart_PR1520,
+      bandPart_PR2155
+    }).map( ([name,bandPart]) => [name,bandPart,{
+      x, y: [],
+      name,
+      type: 'scattergl'
+    }] );
+
+  const data = methods.map( ([name,bandPart,data]) => data );
+
+  const plot = document.createElement('div');
+  plot.style = 'width: 100%; height: 90vh;';
+  document.body.appendChild(plot);
+  const layout = {
+    title: '<b>TFJS matrixBandPart Comparison',
+    xaxis: {
+      title: 'size'
+    },
+    yaxis: {
+      title: 'time [sec]'
+    }
+  };
+  await Plotly.plot(plot, data, layout);
+
+  tf.setBackend('cpu');
+
+  for( let xi = 1; xi < 256; xi++ )
+  {
+    x.push(xi);
+    console.log({xi})
+
+    let numLower = Math.random()*(xi+2) - 1 | 0,
+        numUpper = Math.random()*(xi+2) - 1 | 0;
+
+    const tensor = tf.randomUniform([xi,xi], -1,+1)
+//    console.log(`xi = ${xi}\n---------`);
+//    tensor.print();
+
+    let previous = undefined;
+
+    for( const [_, bandPart, scatter] of methods )
+    {
+      await new Promise( resolve => setTimeout(resolve,0) );
+
+      const t0 = performance.now();
+
+      const band = bandPart(tensor, numLower, numUpper);
+
+      const dt = performance.now() - t0;
+      scatter.y = [...scatter.y, dt*1e-3];
+
+      const data = band.dataSync();
+      if( previous == undefined )
+          previous =  data;
+      else {
+        if( previous.length != data.length ) throw new Error();
+        for( let i=previous.length; i-- > 0; )
+          if( data[i] != previous[i] )
+            throw new Error();
+      }
+    }
+
+    await Plotly.react(plot, data, layout);
+  }
+})();
+   </script>
+ </body>
+</html>
