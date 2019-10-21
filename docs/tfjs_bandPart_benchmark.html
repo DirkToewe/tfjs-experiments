@@ -76,7 +76,7 @@
       }
 
       const shape = $a.shape,
-            [M,N] = $a.shape.slice(-2);
+            [M,N] =    shape.slice(-2);
 
       if( !(numLower <= M) ) {
         throw new Error(`bandPart() check failed: numLower <= #rows.`   );
@@ -88,12 +88,13 @@
       if( numLower < 0 ) { numLower = M; }
       if( numUpper < 0 ) { numUpper = N; }
 
-      const i = tf.range(0,M, 1, 'int32').reshape([-1,1]),
-            j = tf.range(0,N, 1, 'int32');
+      const i = tf.range(0,M, 1, 'int32').reshape([M,1]),
+            j = tf.range(0,N, 1, 'int32'),
+           ij = tf.sub(i,j);
 
       const inBand = tf.logicalAnd(
-        tf.sub(i,j).lessEqual( tf.scalar(numLower,'int32') ),
-        tf.sub(j,i).lessEqual( tf.scalar(numUpper,'int32') )
+        ij.   lessEqual( tf.scalar(+numLower,'int32') ),
+        ij.greaterEqual( tf.scalar(-numUpper,'int32') )
       );
 
       const zero = tf.zeros([M,N], $a.dtype);
@@ -106,6 +107,11 @@
     });
   };
 
+  /** The follwing method's content originates from:
+   *
+   *  author: Kriyszig (https://github.com/Kriyszig)
+   *  source: TFJS PR#2155 (https://github.com/tensorflow/tfjs/pull/2155)
+   */
   const bandPart_PR2155 = (x, numLower, numUpper) => {
     return tf.tidy(() => {
       const totalElements = x.shape.reduce((a, b) => a * b);
@@ -152,50 +158,60 @@
   const layout = {
     title: '<b>TFJS matrixBandPart Comparison',
     xaxis: {
-      title: 'size'
+      title: 'size',
+      type: 'log'
     },
     yaxis: {
-      title: 'time [sec]'
+      title: 'time [sec]',
+      type: 'log'
     }
   };
   await Plotly.plot(plot, data, layout);
 
   tf.setBackend('cpu');
 
-  for( let xi = 1; xi < 256; xi++ )
+  const stepsPerBinade = 16;
+
+  const lastRun = 8*stepsPerBinade;
+  for( let run=0; run <= lastRun; run++ )
+//  for( let run=lastRun; run >= 0; run-- )
   {
+    const xi = Math.round( 2**(run/stepsPerBinade) );
     x.push(xi);
-    console.log({xi})
 
-    let numLower = Math.random()*(xi+2) - 1 | 0,
-        numUpper = Math.random()*(xi+2) - 1 | 0;
+    const numLower = Math.random()*(xi+2) - 1 | 0,
+          numUpper = Math.random()*(xi+2) - 1 | 0,
+            tensor = tf.randomUniform([xi,xi], -1,+1);
 
-    const tensor = tf.randomUniform([xi,xi], -1,+1)
-//    console.log(`xi = ${xi}\n---------`);
-//    tensor.print();
+    try {
+      let previous = undefined;
 
-    let previous = undefined;
+      for( const [_, bandPart, scatter] of methods )
+      {
+        await new Promise( resolve => setTimeout(resolve,0) );
 
-    for( const [_, bandPart, scatter] of methods )
-    {
-      await new Promise( resolve => setTimeout(resolve,0) );
+        const t0 = performance.now();
 
-      const t0 = performance.now();
+        const data = tf.tidy(() => {
+          const  band = bandPart(tensor, numLower, numUpper);
+          return band.dataSync();
+        });
 
-      const band = bandPart(tensor, numLower, numUpper);
+        const dt = performance.now() - t0;
+        scatter.y = [...scatter.y, Math.max(dt,1)*1e-3];
 
-      const dt = performance.now() - t0;
-      scatter.y = [...scatter.y, dt*1e-3];
-
-      const data = band.dataSync();
-      if( previous == undefined )
-          previous =  data;
-      else {
-        if( previous.length != data.length ) throw new Error();
-        for( let i=previous.length; i-- > 0; )
-          if( data[i] != previous[i] )
-            throw new Error();
+        if( previous == undefined )
+            previous =  data;
+        else {
+          if( previous.length != data.length ) throw new Error();
+          for( let i=previous.length; i-- > 0; )
+            if( data[i] !== previous[i] )
+              throw new Error();
+        }
       }
+    }
+    finally {
+      tensor.dispose();
     }
 
     await Plotly.react(plot, data, layout);
